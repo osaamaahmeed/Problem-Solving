@@ -21,8 +21,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 PORT = int(os.environ.get("PS_PORT", "10045"))
-NOTION_DB = "41cea90596468167ba58f98204bb5e56"            # Problems database
-NOTION_DS = "41cea905-9646-81f1-82c1-000bbd95cd04"        # its data source
+# My Problems database. If you fork this, set NOTION_DATABASE_ID / NOTION_DATA_SOURCE_ID in .env.
+DEFAULT_DB = "41cea90596468167ba58f98204bb5e56"
+DEFAULT_DS = "41cea905-9646-81f1-82c1-000bbd95cd04"
 REVIEW_GAPS = [1, 3, 7, 21]                               # days until next review, after review 0,1,2,3
 SOLVE_DIRS = ("codeforces", "leetcode", "atcoder", "cses", "other")
 
@@ -256,20 +257,27 @@ def map_tag(t):
     return TAG_ALIASES.get(t, t)
 
 
-def env_token():
-    tok = os.environ.get("NOTION_TOKEN")
+def env_get(key, default=None):
+    """Read a setting from the environment or from .env."""
+    val = os.environ.get(key)
     env = ROOT / ".env"
-    if not tok and env.exists():
+    if not val and env.exists():
         for line in env.read_text(encoding="utf-8").splitlines():
-            if line.strip().startswith("NOTION_TOKEN="):
-                tok = line.split("=", 1)[1].strip()
-    return tok
+            if line.strip().startswith(key + "="):
+                val = line.split("=", 1)[1].strip()
+    return val or default
+
+
+def env_token():
+    return env_get("NOTION_TOKEN")
 
 
 class Notion:
     def __init__(self, token):
         self.token = token
         self.version = "2025-09-03"
+        self.db = env_get("NOTION_DATABASE_ID", DEFAULT_DB)
+        self.ds = env_get("NOTION_DATA_SOURCE_ID", DEFAULT_DS)
 
     def call(self, method, path, body=None):
         h = {"Authorization": f"Bearer {self.token}", "Notion-Version": self.version}
@@ -281,17 +289,17 @@ class Notion:
     def find(self, pid):
         flt = {"filter": {"property": "ID", "rich_text": {"equals": pid}}}
         try:
-            res = self.call("POST", f"data_sources/{NOTION_DS}/query", flt)
+            res = self.call("POST", f"data_sources/{self.ds}/query", flt)
         except RuntimeError:
             self.version = "2022-06-28"  # older API fallback
-            res = self.call("POST", f"databases/{NOTION_DB}/query", flt)
+            res = self.call("POST", f"databases/{self.db}/query", flt)
         return res["results"][0] if res["results"] else None
 
     def save(self, page, props):
         if page:
             return self.call("PATCH", f"pages/{page['id']}", {"properties": props})
-        parent = ({"type": "data_source_id", "data_source_id": NOTION_DS} if self.version >= "2025"
-                  else {"database_id": NOTION_DB})
+        parent = ({"type": "data_source_id", "data_source_id": self.ds} if self.version >= "2025"
+                  else {"database_id": self.db})
         return self.call("POST", "pages", {"parent": parent, "properties": props})
 
 
