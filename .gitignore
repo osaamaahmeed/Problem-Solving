@@ -1,0 +1,18 @@
+# build output
+*.exe
+*.out
+a.out
+# editor scratch
+tempCodeRunnerFile.*
+input.txt
+output.txt
+.vscode/
+
+# compiled binary with no extension
+archive/codeforces/Exam Contest SCU/Day 2 Contest/C. od5ol bda7rk/c
+
+# local secrets and toolkit output
+.env
+expected.txt
+__pycache__/
+tools/listener.log

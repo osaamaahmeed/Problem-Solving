@@ -1,0 +1,11 @@
+#!/bin/sh
+# After every commit: push each committed solution's footer to Notion.
+# Put "[skip notion]" in a commit message to skip it.
+cd "$(git rev-parse --show-toplevel)" || exit 0
+for py in "py -3" python3 python; do
+  if $py --version >/dev/null 2>&1; then
+    $py tools/ps.py sync
+    exit 0
+  fi
+done
+echo "[notion] Python not found, skipped."
