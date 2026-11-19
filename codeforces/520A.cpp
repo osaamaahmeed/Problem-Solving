@@ -49,6 +49,6 @@ int main()
 // ------------------------------------------------------------
 // CF-520A — Pangram
 // https://codeforces.com/problemset/problem/520/A
-// Sources:
-// Went:    (easy | struggled | hint | editorial)
-// Insight:
+// Sources:     ICPC - SCU: Level 1 Sheet (VJudge) 
+// Went:        easy 
+// Insight:     Wrong answer because I didn't notice that letters can be capital and small
