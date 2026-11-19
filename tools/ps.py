@@ -5,7 +5,10 @@
   python tools/ps.py listen        receive Competitive Companion clicks from the browser (port 10045)
   python tools/ps.py sync [files]  push each solution's footer to Notion (run by the git hook after a commit)
 
+  python tools/ps.py check         test the Codeforces, LeetCode and Notion connections
+
 Add --dry-run to `sync` to print what would be sent without calling Notion.
+Add --meta-only to `sync` to refill title/rating/tags of existing rows without counting a review.
 """
 import datetime
 import json
@@ -63,7 +66,7 @@ def log(msg):
 
 
 def http_json(url, body=None, headers=None, method=None, timeout=10):
-    h = {"User-Agent": "problem-solving-toolkit", "Content-Type": "application/json"}
+    h = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) problem-solving-toolkit", "Accept": "application/json", "Content-Type": "application/json"}
     h.update(headers or {})
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(url, data=data, headers=h, method=method or ("POST" if data else "GET"))
@@ -111,13 +114,29 @@ def identify(raw):
 
 
 def cf_meta(contest, index):
+    """Title, rating and tags from the Codeforces API (two endpoints, in case one fails)."""
     if int(contest) >= 100000:  # gym: no ratings
         return {}
-    d = http_json(f"https://codeforces.com/api/contest.standings?contestId={contest}&from=1&count=1")
-    for p in d["result"]["problems"]:
-        if p["index"].upper() == index.upper():
-            return {"title": p["name"], "rating": p.get("rating"), "tags": p.get("tags", [])}
-    return {}
+    errors = []
+    for url in (f"https://codeforces.com/api/contest.standings?contestId={contest}&from=1&count=1",
+                "https://codeforces.com/api/problemset.problems"):
+        try:
+            d = http_json(url, timeout=20)
+            if d.get("status") != "OK":
+                raise RuntimeError(d.get("comment", "status not OK"))
+            probs = d["result"]["problems"]
+            for p in probs:
+                if str(p.get("contestId", contest)) == str(contest) and p["index"].upper() == index.upper():
+                    return {"title": p["name"], "rating": p.get("rating"), "tags": p.get("tags", [])}
+        except Exception as e:
+            errors.append(f"{url.split('/api/')[1].split('?')[0]}: {e}")
+    raise RuntimeError("; ".join(errors) or "problem not found")
+
+
+def cf_difficulty(rating):
+    if not rating:
+        return None
+    return "Easy" if rating <= 1200 else "Medium" if rating <= 1800 else "Hard"
 
 
 def lc_meta(slug):
@@ -313,7 +332,7 @@ def github_link(rel):
         return None
 
 
-def build_props(f, rel, page, today):
+def build_props(f, rel, page, today, meta_only=False):
     old = (page or {}).get("properties", {})
     solved_before = (old.get("Status", {}).get("status") or {}).get("name") in ("Solved", "Upsolved")
     reviews = old.get("Reviews", {}).get("number") or 0
@@ -352,10 +371,11 @@ def build_props(f, rel, page, today):
         if platform == "Codeforces":
             m = re.match(r"CF-(\d+)([A-Z]\d?)$", f["id"])
             meta = cf_meta(*m.groups()) if m else {}
+            meta["difficulty"] = cf_difficulty(meta.get("rating"))
         elif platform == "LeetCode" and f["url"]:
             meta = lc_meta(re.search(r"problems/([^/]+)", f["url"]).group(1))
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[notion] {f['id']}: couldn't fetch rating/tags ({e})")
     title = title or meta.get("title") or f["id"]
     p["Problem"] = {"title": [{"text": {"content": title}}]}
     if meta.get("rating") and not old.get("Rating", {}).get("number"):
@@ -367,6 +387,8 @@ def build_props(f, rel, page, today):
     link = github_link(rel)
     if link:
         p["Code"] = {"url": link}
+    if meta_only:  # refresh title/rating/tags only, don't touch reviews
+        p = {k: v for k, v in p.items() if k in ("Problem", "Rating", "Difficulty", "Tags", "Code", "Link")}
     return p
 
 
@@ -381,7 +403,8 @@ def committed_files():
 
 def cmd_sync(args):
     dry = "--dry-run" in args
-    files = [a for a in args if a != "--dry-run"] or committed_files()
+    meta_only = "--meta-only" in args
+    files = [a for a in args if not a.startswith("--")] or committed_files()
     files = [f.replace("\\", "/") for f in files if f.replace("\\", "/").split("/")[0] in SOLVE_DIRS]
     if not files:
         return
@@ -403,11 +426,17 @@ def cmd_sync(args):
             continue
         try:
             page = notion.find(f["id"]) if notion else None
-            props = build_props(f, rel, page, today)
+            if meta_only and not page:
+                print(f"[notion] {f['id']}: not in Notion yet, nothing to refresh")
+                continue
+            props = build_props(f, rel, page, today, meta_only)
             if dry:
                 print(json.dumps({rel: props}, ensure_ascii=False, indent=1))
                 continue
             notion.save(page, props)
+            if meta_only:
+                print(f"[notion] {f['id']}: refreshed rating/tags")
+                continue
             nr = props["Next Review"]["date"]
             print(f"[notion] {f['id']}: {'updated' if page else 'added'}"
                   + (f", next review {nr['start']}" if nr else ""))
@@ -415,8 +444,23 @@ def cmd_sync(args):
             print(f"[notion] {f['id']}: failed: {e}")
 
 
+def cmd_check(args):
+    """Test each connection the toolkit needs."""
+    tests = [
+        ("Codeforces API", lambda: cf_meta("520", "A")),
+        ("LeetCode API", lambda: lc_meta("two-sum")),
+        ("Notion", lambda: Notion(env_token()).find("CF-520A") if env_token() else (_ for _ in ()).throw(RuntimeError("no NOTION_TOKEN in .env"))),
+    ]
+    for name, fn in tests:
+        try:
+            r = fn()
+            print(f"OK    {name}: {str(r)[:120]}")
+        except Exception as e:
+            print(f"FAIL  {name}: {str(e)[:300]}")
+
+
 if __name__ == "__main__":
-    cmds = {"new": cmd_new, "listen": cmd_listen, "sync": cmd_sync}
+    cmds = {"new": cmd_new, "listen": cmd_listen, "sync": cmd_sync, "check": cmd_check}
     if len(sys.argv) < 2 or sys.argv[1] not in cmds:
         print(__doc__)
         sys.exit(1)
